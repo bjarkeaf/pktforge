@@ -1,0 +1,3 @@
+cocotb>=2.0
+cocotb-bus>=0.2
+pytest>=7.0
