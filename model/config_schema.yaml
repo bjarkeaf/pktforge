@@ -1,0 +1,82 @@
+# pktforge stream configuration schema
+#
+# One YAML file per stream configuration. Consumed by both the Python golden
+# model (model/golden.py) and cocotb testbenches (tb/). The RTL AXI-Lite
+# register file is loaded from the same values.
+#
+# All integer fields accept decimal (42), hex (0x2a), or dotted (192.168.1.1)
+# representations where the type makes sense.
+
+$schema: "pktforge/config/v1"
+
+# Frame type determines which header engine is used.
+# One of: roce_v2 | tcp_http
+frame_type: roce_v2
+
+# --- Layer 2 ---
+eth:
+  src_mac: "02:00:00:00:00:01"
+  dst_mac: "02:00:00:00:00:02"
+  vlan: null                 # null | {id: int, pcp: int, dei: 0|1}
+
+# --- Layer 3 ---
+ip:
+  src: "10.0.0.1"
+  dst: "10.0.0.2"
+  ttl: 64
+  dscp: 0
+  ecn: 0
+  # Fragment/flags fields left at library defaults (DF=1, no fragmentation).
+
+# --- Layer 4 ---
+# For roce_v2: udp.dst_port is 4791 by IANA assignment.
+# For tcp_http: tcp.dst_port is typically 80 or 8080.
+transport:
+  src_port: 32768
+  dst_port: 4791             # 4791 for RoCEv2, 80 for tcp_http
+
+# --- RoCEv2 specific ---
+roce:
+  opcode: 0x64               # UD Send Only. See IB spec BTH.OpCode encoding.
+  pkey: 0xFFFF
+  dest_qp: 0x000010
+  ack_req: false
+  psn_start: 0x000000        # first packet's PSN; increments per packet
+
+# --- TCP/HTTP specific ---
+http:
+  # Payload template used for every packet (bytes). {seq} is substituted with
+  # the per-packet TCP sequence number in decimal.
+  payload_template: "GET /hash-test?seq={seq} HTTP/1.1\r\nHost: pktforge\r\n\r\n"
+  tcp_seq_start: 0x00000000
+  tcp_ack: 0x00000000
+  tcp_window: 65535
+  tcp_flags: "PA"            # PSH+ACK
+
+# --- Sweep engine (range mode, per pktgen-dpdk semantics) ---
+# For each field: {min, max, step}. Range is inclusive of min and max.
+# Wraps from max back to min after step lands past max.
+# Set to null to leave the field fixed at its base value above.
+sweep:
+  src_ip:   {min: "10.0.0.1",  max: "10.0.0.16",  step: 1}
+  dst_ip:   null
+  src_port: {min: 32768, max: 40959, step: 1}
+  dst_port: null
+  size:     {min: 128,   max: 1500,  step: 64}   # total frame bytes incl. headers, excl. FCS
+
+# --- Rate limiter ---
+# Only one of the two knobs is active. Rate mode uses tokens/sec at line clock.
+rate:
+  mode: "line_percent"       # line_percent | inter_frame_gap
+  line_percent: 100          # 1..100
+  ifg_bytes: null            # used when mode == inter_frame_gap
+
+# --- Output framing options ---
+output:
+  append_fcs: true           # false when the downstream MAC appends its own FCS
+  append_icrc: true          # false when the downstream stack computes ICRC
+
+# --- Test/debug ---
+run:
+  packet_count: 1000         # 0 = free-running
+  seed: 0                    # PRNG seed for any randomized fields
