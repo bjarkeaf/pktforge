@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  golden-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r model/requirements.txt
+      - name: run golden-model self-tests
+        run: make golden-check
+
+  # sim job is deferred until Phase 2 brings real RTL. cocotb 2.0.1 needs
+  # Verilator >= 5.028 (clearEvalNeeded, doInertialPuts) but apt on ubuntu-24.04
+  # ships 5.020. When we have real modules, either build Verilator from source
+  # or use oss-cad-suite. Until then, running the passthrough smoke test in CI
+  # proves nothing beyond harness plumbing.
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator
+      - name: verilator lint-only
+        run: make lint

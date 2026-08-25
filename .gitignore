@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Simulation output
+tb/sim_build/
+tb/results/
+*.vcd
+*.fst
+*.xml
+*.log
+
+# Verilator
+obj_dir/
+
+# Quartus
+synth/quartus/db/
+synth/quartus/incremental_db/
+synth/quartus/output_files/
+synth/quartus/qdb/
+synth/quartus/*.qws
+synth/quartus/*.rpt
+synth/quartus/*.summary
+synth/quartus/*.smsg
+synth/quartus/*.pin
+synth/quartus/*.sof
+synth/quartus/*.pof
+synth/quartus/*.jdi
+synth/quartus/*.done
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+
