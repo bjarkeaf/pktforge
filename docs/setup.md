@@ -38,6 +38,8 @@ sudo pacman -S verilator gtkwave
 
 Note that cocotb 2.0+ requires a recent Verilator (≥ 5.028) for its runner-driven flow. If your distro ships an older version, build from source or use `oss-cad-suite`.
 
+**Path caveat:** Verilator's generated Makefile does not tolerate spaces in the source or build paths (a GNU Make limitation). If the repo lives at a path with spaces, `make test` fails with `No rule to make target '/home/.../first-word'`. Fix: clone the repo somewhere without spaces or symlink it (e.g. `ln -s '/orig/with space/pktforge' /tmp/pktforge`) and operate on the symlinked path (including a venv installed there). CI has no such issue.
+
 Sanity check:
 
 ```bash
