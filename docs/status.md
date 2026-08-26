@@ -4,28 +4,31 @@ Handoff document. Update at the end of every session. Read at the start of every
 
 ## Current state
 
-**Phase 0, mid-scaffold.** Repo initialized, Python golden model + FCS + ICRC implemented, cocotb harness skeleton in place with a passthrough smoke test. No real RTL yet.
+**Phase 0, exit gate cleared.** Repo initialized, Python golden model + FCS + ICRC implemented and cross-validated against Scapy's `contrib.roce` reference. Cocotb harness skeleton in place with a passthrough smoke test. No real RTL yet.
 
 ## What is done
 
 - Repo scaffold: LICENSE (Apache-2.0), `.gitignore`, `README.md`, `Makefile`, `.github/workflows/ci.yml`
 - Config loader (`model/config.py`) with YAML schema (`model/config_schema.yaml`), tested
 - Ethernet FCS helper (`model/fcs.py`), tested
-- RoCEv2 ICRC implementation (`model/icrc.py`) with masking helpers and unit tests. **NOT YET VALIDATED against real captures**
+- RoCEv2 ICRC implementation (`model/icrc.py`) with masking helpers and unit tests. Cross-validated byte-exact against `scapy.contrib.roce` over a 200-shape random sweep (`test_against_scapy_reference`). Real-capture validation remains available as opt-in but is not required for Phase 0 exit
 - Scapy golden-model frame factory (`model/golden.py`) for RoCEv2 and TCP+HTTP, with sweep-per-packet, PSN/seq incrementing, FCS/ICRC appending
 - cocotb harness: `tb/conftest.py`, `tb/lib/axis.py` (AXI-Stream master driver + slave monitor with tkeep/backpressure), `tb/test_passthrough.py` (smoke test)
 - Trivial `rtl/pktforge_passthrough.sv` to prove the harness end-to-end (will be deleted when the first real module lands)
 - Docs: `docs/setup.md`, this file
 
-## What is next (Phase 0 exit)
+## What is next (Phase 1 kickoff)
 
-1. Install tools per `docs/setup.md` (python-scapy/verilator/gtkwave, plus a vendor toolchain when board work starts)
-2. Capture Soft-RoCE reference frames per `docs/setup.md` and drop them in `model/ref_pcaps/`
-3. Run `pytest model/test_icrc.py::test_against_captures`. If it fails, debug the ICRC masking or byte order in `model/icrc.py` (candidate issues: BTH.Resv8a byte position, ICRC byte endianness on the wire, whether UDP checksum masking is actually zero-fill in real captures). When it passes: update `model/icrc.py` header to remove the UNVALIDATED marker, record here that validation is complete
+1. Decide first RTL module. Two reasonable starting points:
+   - `pktforge_regfile_axil.sv`: AXI-Lite register file. Small, low-risk, unblocks every other module. Good warm-up
+   - `pktforge_hdr_builder.sv`: header assembly pipeline (Eth/IP/UDP/BTH). Higher value, exercises the golden model directly, but touches the sweep engine
+2. Write the cocotb test first (golden-model-is-law). Byte-exact diff against `model/golden.py`
+3. When Phase 2 opens (first real RTL merged), fix sim CI: build Verilator ≥ 5.028 from source or switch to oss-cad-suite
+4. Real-capture ICRC validation is optional and can be revisited when a two-host test setup is available (single-host Soft-RoCE loopback does not produce sniffable traffic; see `docs/status.md` history)
 
 ## Known limitations / TODOs
 
-- ICRC unvalidated (see above)
+- ICRC only cross-validated against Scapy contrib, not against a real Soft-RoCE capture. Sufficient for now but revisit when two-host capture is possible
 - Golden model IPv6 path not implemented (spec Annex A17 masking differs slightly)
 - Sweep engine currently supports one dim advancing per packet; multi-dim advance is lockstep (all dims step together each packet). If pktgen semantics is nested (inner dim wraps before outer advances), revisit
 - No `pktforge_checker` yet (Phase 4)
