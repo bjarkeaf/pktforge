@@ -21,11 +21,28 @@ jobs:
       - name: run golden-model self-tests
         run: make golden-check
 
-  # sim job is deferred until Phase 2 brings real RTL. cocotb 2.0.1 needs
-  # Verilator >= 5.028 (clearEvalNeeded, doInertialPuts) but apt on ubuntu-24.04
-  # ships 5.020. When we have real modules, either build Verilator from source
-  # or use oss-cad-suite. Until then, running the passthrough smoke test in CI
-  # proves nothing beyond harness plumbing.
+  sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: install oss-cad-suite (Verilator 5.028+)
+        run: |
+          cd /tmp
+          curl -sSL -o oss-cad-suite.tgz \
+            https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2025-08-01/oss-cad-suite-linux-x64-20250801.tgz
+          tar -xzf oss-cad-suite.tgz
+          echo "/tmp/oss-cad-suite/bin" >> $GITHUB_PATH
+      - name: verilator version
+        run: verilator --version
+      - name: install python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r model/requirements.txt -r tb/requirements.txt
+      - name: run cocotb suites
+        run: make test
 
   lint:
     runs-on: ubuntu-latest
