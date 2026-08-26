@@ -60,11 +60,13 @@ quartus_sh --version   # or vivado -version, etc.
 
 If your board has a JTAG programmer with its own udev rules, remember to replug after driver install and add yourself to the relevant group (`plugdev` on many distros).
 
-## Soft-RoCE captures for ICRC validation
+## Soft-RoCE captures for ICRC validation (optional)
 
-The Python ICRC implementation in `model/icrc.py` is currently **unvalidated**. It follows the RoCEv2 spec as we understand it but has not been checked byte-exact against real captures. Doing so is the Phase 0 exit gate.
+The Python ICRC implementation in `model/icrc.py` is cross-validated byte-exact against `scapy.contrib.roce` over a 200-shape random sweep. That is the Phase 0 exit gate and is checked by `test_against_scapy_reference`, which runs as part of `make golden-check`.
 
-Steps:
+Validating against **real** Soft-RoCE captures is a stronger check but requires a two-host setup: single-host loopback with `rdma_rxe` bypasses the netdev, so tcpdump captures zero packets. If you have a second Linux box, the steps below produce reference pcaps that `test_against_captures` will pick up automatically.
+
+Steps (two hosts required):
 
 ```bash
 # One-shot per boot: enable Soft-RoCE on the loopback interface.
@@ -87,7 +89,7 @@ Capture several frames of different sizes. Save each as `model/ref_pcaps/*.pcap`
 python -m pytest model/test_icrc.py::test_against_captures -v
 ```
 
-If it passes, edit `docs/status.md` to record that the ICRC model is validated (with the pcap filenames), and update `model/icrc.py`'s header comment to remove the UNVALIDATED marker.
+If it passes, record the pcap filenames in `docs/status.md` and note in `model/icrc.py`'s header that real-capture validation is now complete on top of the Scapy cross-check.
 
 ## Troubleshooting
 

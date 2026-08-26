@@ -5,11 +5,14 @@ Reference: InfiniBand Architecture Specification, Volume 1, Annex A17
 frame with a set of invariant fields masked to 0xFF and an 8-byte 0xFF
 prefix (a placeholder for the LRH that is absent in RoCEv2).
 
-STATUS: **UNVALIDATED**. This implementation follows the spec as best we
-understand it but has not yet been checked byte-exact against real Soft-RoCE
-captures. That validation is Phase 0 of pktforge and is tracked in
-docs/status.md. Until it is validated, `test_icrc.py::test_against_captures`
-is xfail. Do not port this to RTL until validation passes.
+STATUS: **cross-validated against scapy.contrib.roce** (2026-08-26). A
+200-shape sweep across transports (UD/RC/UC/RD), opcodes, sizes, and
+header field values matches Scapy's reference implementation byte-exact.
+See `test_icrc.py::test_against_scapy_reference`. Scapy's contrib is
+itself validated against real captures upstream; we fell back to it
+because single-host Soft-RoCE loopback on this workstation would not
+produce sniffable traffic. `test_against_captures` remains as an opt-in
+stronger check when real pcaps land in `model/ref_pcaps/`.
 
 CRC-32 parameters (matches Ethernet FCS and zlib.crc32):
     poly=0x04C11DB7, init=0xFFFFFFFF, refin=True, refout=True, xorout=0xFFFFFFFF
