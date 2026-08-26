@@ -16,9 +16,20 @@ from typing import Iterable
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[1]
+# Do not use Path.resolve(): it follows symlinks and defeats the
+# space-in-path workaround (users can symlink the repo under /tmp/pktforge
+# to sidestep Verilator's GNU-Make-cannot-handle-spaces limitation).
+REPO = Path(__file__).absolute().parents[1]
 RTL_DIR = REPO / "rtl"
-BUILD_DIR = REPO / "tb" / "sim_build"
+
+# Verilator's Make refuses to build in directories that contain spaces.
+# Redirect to /tmp when the repo path has spaces or if the user overrides.
+_default_build = REPO / "tb" / "sim_build"
+if " " in str(_default_build):
+    BUILD_DIR = Path("/tmp") / "pktforge_sim_build"
+else:
+    BUILD_DIR = _default_build
+BUILD_DIR = Path(os.environ.get("PKTFORGE_SIM_BUILD", BUILD_DIR))
 
 
 def _sim() -> str:

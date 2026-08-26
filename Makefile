@@ -24,7 +24,12 @@ lint:
 	if [ -z "$$files" ]; then \
 		echo "no rtl yet, skipping lint"; \
 	else \
-		$(VERILATOR) --lint-only -Wall -Wno-DECLFILENAME $$files; \
+		set -e; \
+		for f in $$files; do \
+			mod=$$(basename $$f .sv); \
+			echo "lint: $$f (--top-module $$mod)"; \
+			$(VERILATOR) --lint-only -Wall --top-module $$mod $$f; \
+		done; \
 	fi
 
 golden-check:
