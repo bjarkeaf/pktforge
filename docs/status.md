@@ -19,14 +19,15 @@ Handoff document. Update at the end of every session. Read at the start of every
 - `rtl/pktforge_sweep.sv`: parametric per-dimension sweep counter. `start_i` loads counter to `min_i`, `advance_i` steps by `step_i` and wraps back to `min_i` when the next value would exceed `max_i`. `step_i==0` disables the sweep (`value_o == base_i`). Tested by `tb/test_sweep.py` against a Python mirror of `_sweep_value`. Instantiated 5 times inside `pktforge_hdr_builder` for the 5 sweep dimensions
 - `rtl/pktforge_fcs_appender.sv`: AXI-Stream in → out. Computes CRC-32 (zlib.crc32-compatible) over each frame and appends the 4-byte FCS little-endian, merging into the last input beat's empty lanes when possible. Tested by `tb/test_fcs_appender.py` against `model/fcs.py:compute_fcs`
 - `rtl/pktforge_icrc_appender.sv`: RoCEv2 Invariant CRC appender. Same skeleton as fcs_appender, with per-byte masking (offsets 15, 22, 24-25, 40-41, 46 → 0xFF), Ethernet header excluded from the CRC pseudo-packet, and a precomputed initial CRC state (0xDEBB20E3, the state after 8 bytes of 0xFF LRH prefix). Tested by `tb/test_icrc_appender.py` against `model/icrc.py:compute_icrc_ipv4`
-- `rtl/pktforge_top.sv`: top-level wrapper. Instantiates regfile, hdr_builder, ICRC appender, and FCS appender in series. Packet controller latches PACKET_COUNT on CTRL.START, drives hdr_builder's trigger with backpressure-safe handshake, and counts PACKETS_SENT. STATUS.DONE asserts when the count is reached or CTRL.STOP fires. `output_opts[1:0]` bits drive both the trailer-aware sizing in hdr_builder and the runtime enable of the ICRC/FCS appender datapaths (each appender becomes a pure pass-through when its enable bit is low). Tested end-to-end by `tb/test_top.py` across all four (icrc,fcs) combinations
+- `rtl/pktforge_top.sv`: top-level wrapper. Instantiates regfile, hdr_builder, ICRC appender, FCS appender, and rate limiter. Packet controller latches PACKET_COUNT on CTRL.START, drives hdr_builder's trigger with backpressure-safe handshake, and counts PACKETS_SENT. STATUS.DONE asserts when the count is reached or CTRL.STOP fires. `output_opts[1:0]` bits drive both the trailer-aware sizing in hdr_builder and the runtime enable of the ICRC/FCS appender datapaths (each appender becomes a pure pass-through when its enable bit is low). RATE_IFG_BYTES gates the trigger for `ifg/4` cycles after each on-wire tlast. Tested end-to-end by `tb/test_top.py` across all four (icrc,fcs) combinations plus a rate-limited scenario
+- `rtl/pktforge_rate_limiter.sv`: IFG-based trigger gate. `frame_end_i` loads a `ifg_bytes/LANES` countdown; while non-zero, `trigger_out_o` is held low regardless of `trigger_in_i`. Standalone cocotb coverage in `tb/test_rate_limiter.py`. LINE_PERCENT mode not implemented
 - `model/golden.py`: RoCEv2 UDP checksum forced to 0 to match spec-compliant hardware behavior (IB Annex A17.4.5.3)
 - CI: sim job enabled, pulls oss-cad-suite for Verilator ≥ 5.028
 - Docs: `docs/setup.md`, `docs/regmap.md`, this file
 
 ## What is next
 
-1. Rate limiter: pace triggers according to RATE_MODE / RATE_LINE_PERCENT / RATE_IFG_BYTES
+1. LINE_PERCENT rate mode (currently only RATE_IFG_BYTES is honored; RATE_MODE and RATE_LINE_PERCENT are read but ignored)
 2. Board bring-up (Phase 6 in the plan): pin out `pktforge_top` on the DE10-Nano and route to the fabric loopback tap
 3. Real-capture ICRC validation remains optional and can be revisited when a two-host test setup is available
 
