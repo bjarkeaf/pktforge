@@ -127,7 +127,12 @@ def _frame_roce(cfg, idx, src_ip, dst_ip, src_port, dst_port, size):
     payload = (seed * reps)[:payload_len]
 
     ip = _ipv4_layer(cfg, src_ip, dst_ip)
-    udp = UDP(sport=src_port, dport=dst_port)
+    # IB Annex A17.4.5.3: UDP checksum SHOULD be zero on transmit for RoCEv2;
+    # integrity is provided by the ICRC. Real RoCE NICs (Mellanox, BlueField)
+    # emit chksum=0 unconditionally. Force it here rather than let scapy compute
+    # a normal UDP checksum, so RTL doesn't have to carry a UDP pseudo-header
+    # adder that no compliant RoCE receiver would validate anyway.
+    udp = UDP(sport=src_port, dport=dst_port, chksum=0)
     # Include a zero-filled ICRC placeholder so scapy sets IP.len and UDP.len
     # to the final on-wire values. We overwrite the placeholder with the real
     # ICRC once we have the built header bytes.
