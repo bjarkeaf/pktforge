@@ -17,17 +17,17 @@ Handoff document. Update at the end of every session. Read at the start of every
 - `rtl/pktforge_regfile_axil.sv`: AXI-Lite register file per `docs/regmap.md`. 32-bit data, 8-bit address, per-byte wstrb, RW1S CTRL pulses, RO ID/VERSION/STATUS/PACKETS_SENT, SLVERR on reserved/unaligned. Fully tested by `tb/test_regfile.py`
 - `rtl/pktforge_hdr_builder.sv`: RoCEv2 header/payload generator. Consumes regfile output bus; emits one Eth+IPv4+UDP+BTH+payload frame per `pkt_valid_i` pulse on AXI-Stream master (DATA_W=32). Internal 24-bit PSN counter loads from `roce_psn_ack_i` on `start_i`. Combinational IP header checksum. Tested by `tb/test_hdr_builder.py` (byte-exact diff against golden across baseline/large/unaligned/DSCP-TTL/ack_req/randomized/backpressure scenarios)
 - `rtl/pktforge_sweep.sv`: parametric per-dimension sweep counter. `start_i` loads counter to `min_i`, `advance_i` steps by `step_i` and wraps back to `min_i` when the next value would exceed `max_i`. `step_i==0` disables the sweep (`value_o == base_i`). Tested by `tb/test_sweep.py` against a Python mirror of `_sweep_value`. Instantiated 5 times inside `pktforge_hdr_builder` for the 5 sweep dimensions
+- `rtl/pktforge_fcs_appender.sv`: AXI-Stream in → out. Computes CRC-32 (zlib.crc32-compatible) over each frame and appends the 4-byte FCS little-endian, merging into the last input beat's empty lanes when possible. Tested by `tb/test_fcs_appender.py` against `model/fcs.py:compute_fcs`
 - `model/golden.py`: RoCEv2 UDP checksum forced to 0 to match spec-compliant hardware behavior (IB Annex A17.4.5.3)
 - CI: sim job enabled, pulls oss-cad-suite for Verilator ≥ 5.028
 - Docs: `docs/setup.md`, `docs/regmap.md`, this file
 
 ## What is next
 
-1. Rate limiter: pace triggers according to RATE_MODE / RATE_LINE_PERCENT / RATE_IFG_BYTES
-2. `pktforge_icrc` module: append the 4-byte ICRC before FCS when `output_opts.append_icrc` is set. Model already computes it; RTL needs to reproduce it byte-serially
-3. `pktforge_fcs` module: append Ethernet FCS when `output_opts.append_fcs` is set
-4. Top-level integration wrapper (`pktforge_top.sv`) that ties regfile + hdr_builder + rate limiter + ICRC/FCS
-5. Real-capture ICRC validation remains optional and can be revisited when a two-host test setup is available
+1. `pktforge_icrc` module: append the 4-byte ICRC before FCS when `output_opts.append_icrc` is set. Similar structure to `pktforge_fcs_appender` but with pseudo-header masking (see `model/icrc.py`)
+2. Rate limiter: pace triggers according to RATE_MODE / RATE_LINE_PERCENT / RATE_IFG_BYTES
+3. Top-level integration wrapper (`pktforge_top.sv`) that ties regfile + hdr_builder + rate limiter + ICRC/FCS
+4. Real-capture ICRC validation remains optional and can be revisited when a two-host test setup is available
 
 ## Known limitations / TODOs
 
