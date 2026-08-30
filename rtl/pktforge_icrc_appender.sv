@@ -9,7 +9,10 @@
 // the "pseudo-packet":
 //   1) 8 bytes of 0xFF (dummy LRH). Absorbed as the fixed initial CRC
 //      state ICRC_INIT = 0xDEBB20E3 = crc32_update(0xFFFFFFFF, 0xFF x 8).
-//   2) The frame bytes, with these positions masked to 0xFF:
+//   2) The frame's IPv4 header, UDP header, BTH, and payload (NOT the
+//      Ethernet header; bytes at frame offsets 0..13 are pass-through
+//      only and excluded from the CRC). Within the included region,
+//      these positions are masked to 0xFF for CRC purposes:
 //        offset 15         -> IPv4 ToS (DSCP|ECN)
 //        offset 22         -> IPv4 TTL
 //        offsets 24, 25    -> IPv4 header checksum
@@ -64,23 +67,6 @@ module pktforge_icrc_appender #(
         end
     endfunction
 
-    function automatic logic [DATA_W-1:0] mask_data_word(
-        input logic [DATA_W-1:0]  data,
-        input logic [LANES-1:0]   keep,
-        input logic [11:0]        base_offset
-    );
-        logic [DATA_W-1:0] d;
-        d = data;
-        for (int lane = 0; lane < LANES; lane++) begin
-            logic [11:0] byte_off;
-            byte_off = base_offset + 12'(lane);
-            if (keep[lane] && is_masked_byte(byte_off)) begin
-                d[lane*8 +: 8] = 8'hFF;
-            end
-        end
-        return d;
-    endfunction
-
     function automatic logic [31:0] crc32_update_byte(
         input logic [31:0] crc, input logic [7:0] b);
         logic [31:0] c;
@@ -91,16 +77,26 @@ module pktforge_icrc_appender #(
         return c;
     endfunction
 
-    function automatic logic [31:0] crc32_update_word(
+    // Fold one beat into the running CRC. Skips bytes at frame offsets < 14
+    // (the Ethernet header is not part of the ICRC pseudo-packet). Within
+    // the included region, masked positions are folded in as 0xFF.
+    function automatic logic [31:0] crc32_update_beat(
         input logic [31:0]        crc,
         input logic [DATA_W-1:0]  data,
-        input logic [LANES-1:0]   keep);
+        input logic [LANES-1:0]   keep,
+        input logic [11:0]        base_offset
+    );
         logic [31:0] c;
+        logic [11:0] off;
+        logic [7:0]  b;
         c = crc;
-        if (keep[0]) c = crc32_update_byte(c, data[7:0]);
-        if (keep[1]) c = crc32_update_byte(c, data[15:8]);
-        if (keep[2]) c = crc32_update_byte(c, data[23:16]);
-        if (keep[3]) c = crc32_update_byte(c, data[31:24]);
+        for (int lane = 0; lane < LANES; lane++) begin
+            off = base_offset + 12'(lane);
+            if (keep[lane] && (off >= 12'd14)) begin
+                b = is_masked_byte(off) ? 8'hFF : data[lane*8 +: 8];
+                c = crc32_update_byte(c, b);
+            end
+        end
         return c;
     endfunction
 
@@ -115,16 +111,14 @@ module pktforge_icrc_appender #(
     logic [2:0]  append_bytes_q;
     logic [31:0] append_data_q;
 
-    logic [2:0]         k_valid;
-    logic [DATA_W-1:0]  masked_data;
-    logic [31:0]        crc_next;
-    logic [31:0]        icrc_final;
+    logic [2:0]  k_valid;
+    logic [31:0] crc_next;
+    logic [31:0] icrc_final;
 
-    assign k_valid     = {2'b0, s_axis_tkeep[0]} + {2'b0, s_axis_tkeep[1]}
-                       + {2'b0, s_axis_tkeep[2]} + {2'b0, s_axis_tkeep[3]};
-    assign masked_data = mask_data_word(s_axis_tdata, s_axis_tkeep, byte_cnt_q);
-    assign crc_next    = crc32_update_word(crc_q, masked_data, s_axis_tkeep);
-    assign icrc_final  = crc_next ^ 32'hFFFFFFFF;
+    assign k_valid    = {2'b0, s_axis_tkeep[0]} + {2'b0, s_axis_tkeep[1]}
+                      + {2'b0, s_axis_tkeep[2]} + {2'b0, s_axis_tkeep[3]};
+    assign crc_next   = crc32_update_beat(crc_q, s_axis_tdata, s_axis_tkeep, byte_cnt_q);
+    assign icrc_final = crc_next ^ 32'hFFFFFFFF;
 
     // ------------------------------------------------------------------
     // Handshake and output construction (mirror of FCS appender)
