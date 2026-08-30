@@ -59,11 +59,11 @@ module pktforge_top (
     logic         ctrl_one_shot;
     logic [31:0]  frame_type;
     logic [31:0]  eth_vlan;
-    logic [31:0]  rate_mode;         // LINE_PERCENT mode not implemented
-    logic [31:0]  rate_line_percent; // (LINE_PERCENT mode deferred)
     logic [31:0]  seed;
     logic [31:0]  output_opts;    // only [1:0] consumed in this revision
     /* verilator lint_on UNUSEDSIGNAL */
+    logic [31:0]  rate_mode;
+    logic [31:0]  rate_line_percent;
     logic [31:0]  rate_ifg_bytes;
 
     logic [47:0]  eth_src_mac, eth_dst_mac;
@@ -196,18 +196,21 @@ module pktforge_top (
     logic raw_pkt_valid_c;
     assign raw_pkt_valid_c = running_q && hdr_pkt_ready;
 
-    // Rate limiter: masks the trigger for RATE_IFG_BYTES/4 cycles after each
-    // on-wire tlast handshake. IFG=0 disables pacing.
-    logic frame_end_c;
-    assign frame_end_c = m_axis_tvalid && m_axis_tready && m_axis_tlast;
-
+    // Rate limiter: RATE_MODE selects IFG-bytes gating (mode 0) or
+    // LINE_PERCENT gating (mode 1). Snoops the on-wire AXI-Stream to count
+    // per-frame bytes for the LINE_PERCENT calculation.
     pktforge_rate_limiter #(.LANES(4)) u_rate (
-        .clk           (clk),
-        .rst           (rst),
-        .ifg_bytes_i   (rate_ifg_bytes),
-        .frame_end_i   (frame_end_c),
-        .trigger_in_i  (raw_pkt_valid_c),
-        .trigger_out_o (hdr_pkt_valid_c)
+        .clk            (clk),
+        .rst            (rst),
+        .rate_mode_i    (rate_mode),
+        .ifg_bytes_i    (rate_ifg_bytes),
+        .line_percent_i (rate_line_percent),
+        .axis_tvalid_i  (m_axis_tvalid),
+        .axis_tready_i  (m_axis_tready),
+        .axis_tkeep_i   (m_axis_tkeep),
+        .axis_tlast_i   (m_axis_tlast),
+        .trigger_in_i   (raw_pkt_valid_c),
+        .trigger_out_o  (hdr_pkt_valid_c)
     );
 
     // ------------------------------------------------------------------
