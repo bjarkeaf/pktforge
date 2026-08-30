@@ -1,18 +1,22 @@
-// RoCEv2 header + payload generator.
+// RoCEv2 header + payload generator with per-packet sweep engine.
 //
 // Consumes decoded configuration from the regfile output bus and, on each
 // pkt_valid_i pulse, emits exactly one on-wire frame on the m_axis_* master
 // interface. Byte-exact against model/golden.py for the RoCEv2 path with
 // append_icrc=0 and append_fcs=0.
 //
-// Scope (Phase 2):
-//   - RoCEv2 only (frame_type is ignored here; wired at the top level)
-//   - No VLAN
-//   - No FCS, no ICRC (separate downstream modules in later phases)
-//   - Frame size taken from sweep_size_min_i as a fixed value; the sweep
-//     engine lands in Phase 3
-//   - PSN counter is internal: loaded from roce_psn_ack_i[23:0] on start_i,
-//     advances by 1 per emitted packet, wraps at 2^24
+// Sweep engine (5 instances of pktforge_sweep):
+//   - src IP, dst IP, src port, dst port, size all sweep independently.
+//   - start_i loads each counter to its *_min value (matches packet_index=0).
+//   - advance_i pulses once per emitted packet (on the last-beat handshake),
+//     which mirrors "packet_index advances by 1" in golden.py.
+//   - When a dim's step is 0, the sweep passes through the base value
+//     (ip_src_i / ip_dst_i / transport_ports_i / sweep_size_min_i for size).
+//     Matches _sweep_value(dim=None, base, i) in golden.
+//
+// Interface constraint: start_i and pkt_valid_i MUST NOT be asserted in the
+// same cycle. Pulse start_i first, wait at least 1 cycle for sweep counters
+// and PSN to load, then pulse pkt_valid_i.
 //
 // The IPv4 header carries id=1 (matches scapy's default when the field is
 // unset). UDP checksum is zero on the wire; the golden model was updated to
@@ -25,7 +29,7 @@ module pktforge_hdr_builder #(
     input  logic rst,
 
     // Control
-    input  logic start_i,       // one-cycle pulse: load PSN from roce_psn_ack_i
+    input  logic start_i,       // one-cycle pulse: load PSN + sweep counters
     input  logic pkt_valid_i,   // one-cycle pulse: emit one packet
     output logic pkt_ready_o,   // high when the builder can accept a trigger
 
@@ -34,14 +38,29 @@ module pktforge_hdr_builder #(
     /* verilator lint_off UNUSEDSIGNAL */
     input  logic [47:0] eth_src_mac_i,
     input  logic [47:0] eth_dst_mac_i,
-    input  logic [31:0] ip_src_i,           // byte 0 on wire in [31:24]
-    input  logic [31:0] ip_dst_i,           // byte 0 on wire in [31:24]
+    input  logic [31:0] ip_src_i,           // byte 0 on wire in [31:24]; sweep base
+    input  logic [31:0] ip_dst_i,           // byte 0 on wire in [31:24]; sweep base
     input  logic [31:0] ip_misc_i,          // TTL[7:0], DSCP[13:8], ECN[15:14]
-    input  logic [31:0] transport_ports_i,  // sport[15:0], dport[31:16]
+    input  logic [31:0] transport_ports_i,  // sport[15:0], dport[31:16]; sweep base
     input  logic [31:0] roce_op_pkey_i,     // opcode[7:0], pkey[23:8]
     input  logic [31:0] roce_dest_qp_i,     // dest_qp[23:0]
     input  logic [31:0] roce_psn_ack_i,     // psn_start[23:0], ack_req[24]
-    input  logic [31:0] sweep_size_min_i,   // frame size in bytes (fixed for now)
+
+    input  logic [31:0] sweep_sip_min_i,
+    input  logic [31:0] sweep_sip_max_i,
+    input  logic [31:0] sweep_sip_step_i,
+    input  logic [31:0] sweep_dip_min_i,
+    input  logic [31:0] sweep_dip_max_i,
+    input  logic [31:0] sweep_dip_step_i,
+    input  logic [31:0] sweep_sport_min_i,
+    input  logic [31:0] sweep_sport_max_i,
+    input  logic [31:0] sweep_sport_step_i,
+    input  logic [31:0] sweep_dport_min_i,
+    input  logic [31:0] sweep_dport_max_i,
+    input  logic [31:0] sweep_dport_step_i,
+    input  logic [31:0] sweep_size_min_i,
+    input  logic [31:0] sweep_size_max_i,
+    input  logic [31:0] sweep_size_step_i,
     /* verilator lint_on UNUSEDSIGNAL */
 
     // AXI-Stream master
@@ -72,6 +91,82 @@ module pktforge_hdr_builder #(
     assign pkt_ready_o = (state_q == S_IDLE);
 
     // ------------------------------------------------------------------
+    // Sweep engine: one instance per dimension.
+    // advance_c fires on the last-beat handshake, so the sweep counters
+    // hold the current packet's values throughout S_EMIT and step to the
+    // next packet's values on transition back to S_IDLE.
+    // ------------------------------------------------------------------
+    logic advance_c;
+
+    logic [31:0] current_src_ip;
+    logic [31:0] current_dst_ip;
+    logic [15:0] current_src_port;
+    logic [15:0] current_dst_port;
+    logic [11:0] current_size;
+
+    pktforge_sweep #(.WIDTH(32)) u_sweep_sip (
+        .clk       (clk),
+        .rst       (rst),
+        .start_i   (start_i),
+        .advance_i (advance_c),
+        .base_i    (ip_src_i),
+        .min_i     (sweep_sip_min_i),
+        .max_i     (sweep_sip_max_i),
+        .step_i    (sweep_sip_step_i),
+        .value_o   (current_src_ip)
+    );
+
+    pktforge_sweep #(.WIDTH(32)) u_sweep_dip (
+        .clk       (clk),
+        .rst       (rst),
+        .start_i   (start_i),
+        .advance_i (advance_c),
+        .base_i    (ip_dst_i),
+        .min_i     (sweep_dip_min_i),
+        .max_i     (sweep_dip_max_i),
+        .step_i    (sweep_dip_step_i),
+        .value_o   (current_dst_ip)
+    );
+
+    pktforge_sweep #(.WIDTH(16)) u_sweep_sport (
+        .clk       (clk),
+        .rst       (rst),
+        .start_i   (start_i),
+        .advance_i (advance_c),
+        .base_i    (transport_ports_i[15:0]),
+        .min_i     (sweep_sport_min_i[15:0]),
+        .max_i     (sweep_sport_max_i[15:0]),
+        .step_i    (sweep_sport_step_i[15:0]),
+        .value_o   (current_src_port)
+    );
+
+    pktforge_sweep #(.WIDTH(16)) u_sweep_dport (
+        .clk       (clk),
+        .rst       (rst),
+        .start_i   (start_i),
+        .advance_i (advance_c),
+        .base_i    (transport_ports_i[31:16]),
+        .min_i     (sweep_dport_min_i[15:0]),
+        .max_i     (sweep_dport_max_i[15:0]),
+        .step_i    (sweep_dport_step_i[15:0]),
+        .value_o   (current_dst_port)
+    );
+
+    // Size has no separate "base" register; sweep_size_min_i doubles as both
+    // the base (when step==0) and the counter start value (when step>0).
+    pktforge_sweep #(.WIDTH(12)) u_sweep_size (
+        .clk       (clk),
+        .rst       (rst),
+        .start_i   (start_i),
+        .advance_i (advance_c),
+        .base_i    (sweep_size_min_i[11:0]),
+        .min_i     (sweep_size_min_i[11:0]),
+        .max_i     (sweep_size_max_i[11:0]),
+        .step_i    (sweep_size_step_i[11:0]),
+        .value_o   (current_size)
+    );
+
+    // ------------------------------------------------------------------
     // Trigger-time fields (combinational)
     // ------------------------------------------------------------------
     logic [11:0] trig_size;
@@ -80,7 +175,7 @@ module pktforge_hdr_builder #(
     logic [7:0]  ip_tos;
     logic [7:0]  bth_ack_req_byte;
 
-    assign trig_size        = sweep_size_min_i[11:0];
+    assign trig_size        = current_size;
     assign ip_total_len     = {4'h0, trig_size} - 16'd14;
     assign udp_len          = {4'h0, trig_size} - 16'd34;
     assign ip_tos           = {ip_misc_i[13:8], ip_misc_i[15:14]};
@@ -104,18 +199,18 @@ module pktforge_hdr_builder #(
                        + 20'h0_0001
                        + 20'h0_4000
                        + { 4'h0, ip_misc_i[7:0], 8'h11            }
-                       + { 4'h0, ip_src_i[31:16]                  }
-                       + { 4'h0, ip_src_i[15:0]                   }
-                       + { 4'h0, ip_dst_i[31:16]                  }
-                       + { 4'h0, ip_dst_i[15:0]                   };
+                       + { 4'h0, current_src_ip[31:16]            }
+                       + { 4'h0, current_src_ip[15:0]             }
+                       + { 4'h0, current_dst_ip[31:16]            }
+                       + { 4'h0, current_dst_ip[15:0]             };
     assign ip_sum_f1   = {1'b0, ip_sum[15:0]} + {13'h0, ip_sum[19:16]};
     assign ip_sum_f2   = ip_sum_f1[15:0] + {15'h0, ip_sum_f1[16]};
     assign ip_checksum = ~ip_sum_f2;
 
     // ------------------------------------------------------------------
-    // Header staging (combinational): assembled on the trigger cycle,
-    // latched into hdr_bytes_q so the emit path is decoupled from any
-    // config wobble after the trigger.
+    // Header staging (combinational): assembled from sweep outputs on the
+    // trigger cycle, latched into hdr_bytes_q so the emit path is
+    // decoupled from any subsequent sweep advance.
     // ------------------------------------------------------------------
     logic [7:0] hdr_next [0:HDR_LEN-1];
     always_comb begin
@@ -148,20 +243,20 @@ module pktforge_hdr_builder #(
         hdr_next[23] = 8'h11;                    // Protocol = UDP
         hdr_next[24] = ip_checksum[15:8];
         hdr_next[25] = ip_checksum[7:0];
-        hdr_next[26] = ip_src_i[31:24];
-        hdr_next[27] = ip_src_i[23:16];
-        hdr_next[28] = ip_src_i[15:8];
-        hdr_next[29] = ip_src_i[7:0];
-        hdr_next[30] = ip_dst_i[31:24];
-        hdr_next[31] = ip_dst_i[23:16];
-        hdr_next[32] = ip_dst_i[15:8];
-        hdr_next[33] = ip_dst_i[7:0];
+        hdr_next[26] = current_src_ip[31:24];
+        hdr_next[27] = current_src_ip[23:16];
+        hdr_next[28] = current_src_ip[15:8];
+        hdr_next[29] = current_src_ip[7:0];
+        hdr_next[30] = current_dst_ip[31:24];
+        hdr_next[31] = current_dst_ip[23:16];
+        hdr_next[32] = current_dst_ip[15:8];
+        hdr_next[33] = current_dst_ip[7:0];
 
         // UDP
-        hdr_next[34] = transport_ports_i[15:8];  // sport hi
-        hdr_next[35] = transport_ports_i[7:0];   // sport lo
-        hdr_next[36] = transport_ports_i[31:24]; // dport hi
-        hdr_next[37] = transport_ports_i[23:16]; // dport lo
+        hdr_next[34] = current_src_port[15:8];
+        hdr_next[35] = current_src_port[7:0];
+        hdr_next[36] = current_dst_port[15:8];
+        hdr_next[37] = current_dst_port[7:0];
         hdr_next[38] = udp_len[15:8];
         hdr_next[39] = udp_len[7:0];
         hdr_next[40] = 8'h00;                    // UDP checksum = 0 (RoCEv2)
@@ -234,12 +329,15 @@ module pktforge_hdr_builder #(
             end
         end
 
-        // Last beat is the one whose lane 0 is at (size_q - 1) or earlier
-        // and whose last lane reaches or passes size_q.
+        // Last beat is the one whose lane 0 plus LANES reaches or passes size_q.
         if (state_q == S_EMIT) begin
             m_axis_tlast = ({4'h0, byte_cnt_q} + 16'(LANES)) >= {4'h0, size_q};
         end
     end
+
+    // Sweep advance: pulse on the last-beat handshake so counters step to
+    // the next packet's values before we return to S_IDLE.
+    assign advance_c = (state_q == S_EMIT) && m_axis_tready && m_axis_tlast;
 
     // ------------------------------------------------------------------
     // Sequential logic
@@ -264,20 +362,8 @@ module pktforge_hdr_builder #(
                         size_q     <= trig_size;
                         byte_cnt_q <= 12'h0;
                         for (int i = 0; i < HDR_LEN; i++) hdr_bytes_q[i] <= hdr_next[i];
-                        // start_i and pkt_valid_i in the same cycle: use the
-                        // freshly loaded PSN for this packet.
-                        if (start_i) begin
-                            pkt_psn_q <= roce_psn_ack_i[23:0];
-                            psn_q     <= roce_psn_ack_i[23:0] + 24'd1;
-                            // Rebuild the last three header bytes with the
-                            // just-loaded PSN so this packet ships correctly.
-                            hdr_bytes_q[51] <= roce_psn_ack_i[23:16];
-                            hdr_bytes_q[52] <= roce_psn_ack_i[15:8];
-                            hdr_bytes_q[53] <= roce_psn_ack_i[7:0];
-                        end else begin
-                            psn_q <= psn_q + 24'd1;
-                        end
-                        state_q <= S_EMIT;
+                        psn_q      <= psn_q + 24'd1;
+                        state_q    <= S_EMIT;
                     end
                 end
 

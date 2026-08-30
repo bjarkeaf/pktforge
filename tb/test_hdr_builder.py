@@ -1,17 +1,20 @@
-"""Cocotb test for pktforge_hdr_builder.
+"""Cocotb test for pktforge_hdr_builder (with integrated sweep engine).
 
 Byte-exact check of the RTL header builder against `model/golden.py` on the
 RoCEv2 path with append_icrc=0 and append_fcs=0.
 
 Scenarios exercised:
- 1. Default config, 4 packets, size=64. PSN advances by 1 per packet.
+ 1. Baseline: defaults, size=64, 4 packets, no sweep active.
  2. Larger fixed size (256) that spans many payload lanes.
  3. Non-4-byte-aligned size (127) to exercise partial tkeep on the last beat.
- 4. Randomized MAC / IP / port / opcode / PSN with a fresh seed.
- 5. Same as (1) but with 50% ready backpressure on the monitor.
-
-Each scenario asserts each emitted frame is byte-identical to
-`golden.frame_bytes(cfg, i)`.
+ 4. DSCP/ECN/TTL exercised (checksum sensitivity).
+ 5. ack_req=1, non-default opcode / pkey / dest_qp.
+ 6. Randomized configs across 4 seeds.
+ 7. Backpressure: monitor at 40% ready.
+ 8. src port sweep (min=32768 max=32771 step=1, wraps).
+ 9. src IP sweep (integer counter across 5 IPs).
+10. size sweep (64 -> 96 -> 128 -> wrap).
+11. Multi-dim sweep (dst IP and dst port together).
 """
 
 from __future__ import annotations
@@ -46,6 +49,11 @@ def _ip_str(ip_int: int) -> str:
     return ".".join(str((ip_int >> shift) & 0xFF) for shift in (24, 16, 8, 0))
 
 
+def _sweep_dict(min_: int, max_: int, step: int) -> dict | None:
+    """Return a golden-model sweep dim, or None if this dim is disabled."""
+    return None if step == 0 else {"min": min_, "max": max_, "step": step}
+
+
 def _make_cfg(
     *,
     eth_src_mac: int,
@@ -64,8 +72,19 @@ def _make_cfg(
     psn_start: int,
     size: int,
     packet_count: int,
+    sweep_sip=(0, 0, 0),
+    sweep_dip=(0, 0, 0),
+    sweep_sport=(0, 0, 0),
+    sweep_dport=(0, 0, 0),
+    sweep_size=None,          # if given, overrides fixed-size behavior
 ):
     """Assemble a StreamConfig that matches the DUT's driven inputs."""
+    if sweep_size is None:
+        # Fixed size: use step=1 min=max to keep _sweep_value happy but not vary.
+        size_dim = {"min": size, "max": size, "step": 1}
+    else:
+        size_dim = {"min": sweep_size[0], "max": sweep_size[1], "step": sweep_size[2]}
+
     return from_dict({
         "frame_type": "roce_v2",
         "eth": {
@@ -90,11 +109,11 @@ def _make_cfg(
         },
         "http": None,
         "sweep": {
-            "src_ip": None, "dst_ip": None,
-            "src_port": None, "dst_port": None,
-            # step=1 with min==max keeps the size fixed and avoids
-            # _sweep_value's divide-by-zero when step is 0.
-            "size": {"min": size, "max": size, "step": 1},
+            "src_ip":   _sweep_dict(*sweep_sip),
+            "dst_ip":   _sweep_dict(*sweep_dip),
+            "src_port": _sweep_dict(*sweep_sport),
+            "dst_port": _sweep_dict(*sweep_dport),
+            "size":     size_dim,
         },
         "rate": {"mode": "line_percent", "line_percent": 100, "ifg_bytes": None},
         "output": {"append_fcs": False, "append_icrc": False},
@@ -110,21 +129,45 @@ def _drive_config(dut, cfg_kwargs) -> None:
     dut.eth_dst_mac_i.value    = cfg_kwargs["eth_dst_mac"]
     dut.ip_src_i.value         = cfg_kwargs["ip_src"]
     dut.ip_dst_i.value         = cfg_kwargs["ip_dst"]
-    # IP_MISC: TTL[7:0], DSCP[13:8], ECN[15:14]
     ip_misc = (
         (cfg_kwargs["ip_ttl"] & 0xFF)
         | ((cfg_kwargs["ip_dscp"] & 0x3F) << 8)
         | ((cfg_kwargs["ip_ecn"] & 0x03) << 14)
     )
     dut.ip_misc_i.value        = ip_misc
-    # TRANSPORT_PORTS: sport[15:0], dport[31:16]
     dut.transport_ports_i.value = (src_port & 0xFFFF) | ((dst_port & 0xFFFF) << 16)
-    # ROCE_OP_PKEY: opcode[7:0], pkey[23:8]
     dut.roce_op_pkey_i.value    = (cfg_kwargs["opcode"] & 0xFF) | ((cfg_kwargs["pkey"] & 0xFFFF) << 8)
     dut.roce_dest_qp_i.value    = cfg_kwargs["dest_qp"] & 0xFFFFFF
-    # ROCE_PSN_ACK: psn_start[23:0], ack_req[24]
     dut.roce_psn_ack_i.value    = (cfg_kwargs["psn_start"] & 0xFFFFFF) | (int(cfg_kwargs["ack_req"]) << 24)
-    dut.sweep_size_min_i.value  = cfg_kwargs["size"] & 0xFFF
+
+    # Sweep params: use zeros for disabled dims (step=0 → pass base through).
+    sip_min, sip_max, sip_step = cfg_kwargs.get("sweep_sip", (0, 0, 0))
+    dip_min, dip_max, dip_step = cfg_kwargs.get("sweep_dip", (0, 0, 0))
+    sport_min, sport_max, sport_step = cfg_kwargs.get("sweep_sport", (0, 0, 0))
+    dport_min, dport_max, dport_step = cfg_kwargs.get("sweep_dport", (0, 0, 0))
+    if cfg_kwargs.get("sweep_size") is not None:
+        size_min, size_max, size_step = cfg_kwargs["sweep_size"]
+    else:
+        # Fixed size: min=max=size, step=0 (sweep passes base through).
+        size_min = cfg_kwargs["size"]
+        size_max = cfg_kwargs["size"]
+        size_step = 0
+
+    dut.sweep_sip_min_i.value    = sip_min & 0xFFFFFFFF
+    dut.sweep_sip_max_i.value    = sip_max & 0xFFFFFFFF
+    dut.sweep_sip_step_i.value   = sip_step & 0xFFFFFFFF
+    dut.sweep_dip_min_i.value    = dip_min & 0xFFFFFFFF
+    dut.sweep_dip_max_i.value    = dip_max & 0xFFFFFFFF
+    dut.sweep_dip_step_i.value   = dip_step & 0xFFFFFFFF
+    dut.sweep_sport_min_i.value  = sport_min & 0xFFFF
+    dut.sweep_sport_max_i.value  = sport_max & 0xFFFF
+    dut.sweep_sport_step_i.value = sport_step & 0xFFFF
+    dut.sweep_dport_min_i.value  = dport_min & 0xFFFF
+    dut.sweep_dport_max_i.value  = dport_max & 0xFFFF
+    dut.sweep_dport_step_i.value = dport_step & 0xFFFF
+    dut.sweep_size_min_i.value   = size_min & 0xFFF
+    dut.sweep_size_max_i.value   = size_max & 0xFFF
+    dut.sweep_size_step_i.value  = size_step & 0xFFF
 
 
 def _make_axis_bus(dut) -> AxisSlaveBus:
@@ -150,7 +193,12 @@ async def _reset(dut, cycles: int = 5) -> None:
     dut.roce_op_pkey_i.value = 0
     dut.roce_dest_qp_i.value = 0
     dut.roce_psn_ack_i.value = 0
-    dut.sweep_size_min_i.value = 0
+    for sig in ("sweep_sip_min_i", "sweep_sip_max_i", "sweep_sip_step_i",
+                "sweep_dip_min_i", "sweep_dip_max_i", "sweep_dip_step_i",
+                "sweep_sport_min_i", "sweep_sport_max_i", "sweep_sport_step_i",
+                "sweep_dport_min_i", "sweep_dport_max_i", "sweep_dport_step_i",
+                "sweep_size_min_i", "sweep_size_max_i", "sweep_size_step_i"):
+        getattr(dut, sig).value = 0
     for _ in range(cycles):
         await RisingEdge(dut.clk)
     dut.rst.value = 0
@@ -208,7 +256,10 @@ def test_hdr_builder_build_and_run():
     sim = os.environ.get("SIM", "verilator")
     runner = get_runner(sim)
     runner.build(
-        sources=[str(RTL_DIR / "pktforge_hdr_builder.sv")],
+        sources=[
+            str(RTL_DIR / "pktforge_sweep.sv"),
+            str(RTL_DIR / "pktforge_hdr_builder.sv"),
+        ],
         hdl_toplevel="pktforge_hdr_builder",
         build_dir=str(BUILD_DIR / "hdr_builder"),
         always=True,
@@ -247,7 +298,7 @@ async def cocotb_hdr_builder_full(dut):
         packet_count=4,
     )
 
-    # --- 1. Baseline: defaults, size=64, 4 packets ---
+    # --- 1. Baseline: defaults, size=64, 4 packets, no sweep ---
     await _run_scenario(dut, monitor, dict(base), label="baseline")
 
     # --- 2. Larger frame, multi-lane payload ---
@@ -302,3 +353,34 @@ async def cocotb_hdr_builder_full(dut):
     monitor.seed(0xB16B00B5)
     scen7 = dict(base); scen7["size"] = 160; scen7["packet_count"] = 3
     await _run_scenario(dut, monitor, scen7, label="backpressure")
+
+    # Restore full ready for sweep scenarios.
+    monitor.ready_prob = 1.0
+
+    # --- 8. src port sweep (32768..32771 step=1) ---
+    await _reset(dut)
+    scen8 = dict(base)
+    scen8.update(size=64, packet_count=6, sweep_sport=(32768, 32771, 1))
+    await _run_scenario(dut, monitor, scen8, label="sweep_sport")
+
+    # --- 9. src IP sweep (5 IPs) ---
+    await _reset(dut)
+    scen9 = dict(base)
+    scen9.update(size=64, packet_count=8, sweep_sip=(0x0A000001, 0x0A000005, 1))
+    await _run_scenario(dut, monitor, scen9, label="sweep_sip")
+
+    # --- 10. size sweep (64, 96, 128, wrap) ---
+    await _reset(dut)
+    scen10 = dict(base)
+    scen10.update(size=64, packet_count=6, sweep_size=(64, 128, 32))
+    await _run_scenario(dut, monitor, scen10, label="sweep_size")
+
+    # --- 11. Multi-dim: dst IP and dst port sweep together ---
+    await _reset(dut)
+    scen11 = dict(base)
+    scen11.update(
+        size=80, packet_count=5,
+        sweep_dip=(0x0A000010, 0x0A000013, 1),
+        sweep_dport=(5000, 5003, 1),
+    )
+    await _run_scenario(dut, monitor, scen11, label="sweep_multi")
