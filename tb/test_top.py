@@ -57,6 +57,8 @@ A = {
     "OUTPUT_OPTS":       0xAC,
     "PACKET_COUNT":      0xB0,
     "PACKETS_SENT":      0xB8,
+    "RATE_MODE":         0xA0,
+    "RATE_LINE_PERCENT": 0xA4,
     "RATE_IFG_BYTES":    0xA8,
 }
 
@@ -162,9 +164,11 @@ async def _write_config(master: AxilMaster, cfg_kwargs) -> None:
     # override; default is both on to match the regfile reset value.
     output_opts = cfg_kwargs.get("output_opts", 0x3)
     await master.write(A["OUTPUT_OPTS"], output_opts)
-    # IFG defaults to 0 for the byte-exact scenarios so runs stay quick;
-    # dedicated rate scenarios override this.
-    await master.write(A["RATE_IFG_BYTES"], cfg_kwargs.get("rate_ifg_bytes", 0))
+    # Rate: defaults are mode=0 (IFG) and IFG=0 (no pacing) so byte-exact
+    # scenarios stay quick. Dedicated rate scenarios override.
+    await master.write(A["RATE_MODE"],         cfg_kwargs.get("rate_mode", 0))
+    await master.write(A["RATE_LINE_PERCENT"], cfg_kwargs.get("rate_line_percent", 100))
+    await master.write(A["RATE_IFG_BYTES"],    cfg_kwargs.get("rate_ifg_bytes", 0))
     await master.write(A["PACKET_COUNT"], cfg_kwargs["packet_count"] & 0xFFFFFFFF)
 
 
@@ -312,8 +316,15 @@ async def cocotb_top_full(dut):
         scen["output_opts"] = opts
         await _run_scenario(dut, master, monitor, scen, label=name)
 
-    # --- 10. Rate-limited: RATE_IFG_BYTES=400 (100 cycles gap per packet) ---
+    # --- 10. Rate-limited (IFG mode): RATE_IFG_BYTES=400 (100 cycles gap per packet) ---
     await _reset(dut)
     scen10 = dict(base); scen10["size"] = 64; scen10["packet_count"] = 3
     scen10["rate_ifg_bytes"] = 400
-    await _run_scenario(dut, master, monitor, scen10, label="rate_limited")
+    await _run_scenario(dut, master, monitor, scen10, label="rate_ifg")
+
+    # --- 11. Rate-limited (LINE_PERCENT mode): 25% of line rate ---
+    await _reset(dut)
+    scen11 = dict(base); scen11["size"] = 64; scen11["packet_count"] = 3
+    scen11["rate_mode"] = 1
+    scen11["rate_line_percent"] = 25
+    await _run_scenario(dut, master, monitor, scen11, label="rate_line_percent")
