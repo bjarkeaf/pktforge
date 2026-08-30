@@ -28,7 +28,7 @@ lint:
 		for f in $$files; do \
 			mod=$$(basename $$f .sv); \
 			echo "lint: $$f (--top-module $$mod)"; \
-			$(VERILATOR) --lint-only -Wall --top-module $$mod $$f; \
+			$(VERILATOR) --lint-only -Wall -I$(RTL_DIR) --top-module $$mod $$f; \
 		done; \
 	fi
 
