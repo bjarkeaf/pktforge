@@ -4,7 +4,7 @@ Handoff document. Update at the end of every session. Read at the start of every
 
 ## Current state
 
-**Phase 1 in progress.** Phase 0 exit gate cleared (ICRC cross-validated). First real RTL module `pktforge_regfile_axil.sv` implemented with full cocotb test coverage against `docs/regmap.md`. Passthrough smoke test superseded and removed.
+**Phase 2 in progress.** Phase 0 exit gate cleared (ICRC cross-validated). Phase 1 done (regfile). Phase 2 header builder (`pktforge_hdr_builder.sv`) implemented; cocotb test drives config directly onto its pins and diffs each emitted frame byte-exact against `model/golden.py` (RoCEv2, no ICRC/FCS).
 
 ## What is done
 
@@ -15,14 +15,18 @@ Handoff document. Update at the end of every session. Read at the start of every
 - Scapy golden-model frame factory (`model/golden.py`) for RoCEv2 and TCP+HTTP, with sweep-per-packet, PSN/seq incrementing, FCS/ICRC appending
 - cocotb harness: `tb/conftest.py`, `tb/lib/axis.py` (AXI-Stream master driver + slave monitor with tkeep/backpressure), `tb/lib/axil.py` (AXI-Lite master BFM)
 - `rtl/pktforge_regfile_axil.sv`: AXI-Lite register file per `docs/regmap.md`. 32-bit data, 8-bit address, per-byte wstrb, RW1S CTRL pulses, RO ID/VERSION/STATUS/PACKETS_SENT, SLVERR on reserved/unaligned. Fully tested by `tb/test_regfile.py`
+- `rtl/pktforge_hdr_builder.sv`: RoCEv2 header/payload generator. Consumes regfile output bus; emits one Eth+IPv4+UDP+BTH+payload frame per `pkt_valid_i` pulse on AXI-Stream master (DATA_W=32). Internal 24-bit PSN counter loads from `roce_psn_ack_i` on `start_i`. Combinational IP header checksum. Tested by `tb/test_hdr_builder.py` (byte-exact diff against golden across baseline/large/unaligned/DSCP-TTL/ack_req/randomized/backpressure scenarios)
+- `model/golden.py`: RoCEv2 UDP checksum forced to 0 to match spec-compliant hardware behavior (IB Annex A17.4.5.3)
 - CI: sim job enabled, pulls oss-cad-suite for Verilator ≥ 5.028
 - Docs: `docs/setup.md`, `docs/regmap.md`, this file
 
-## What is next (Phase 2 kickoff)
+## What is next (Phase 3 kickoff)
 
-1. `pktforge_hdr_builder.sv`: reads config from regfile outputs, produces Eth+IPv4+UDP+BTH bytes on AXI-Stream master. Golden-model-is-law: byte-exact diff against `model/golden.py` on cocotb runs
-2. IP header checksum computation lives inside hdr_builder (small combinational adder tree)
-3. Real-capture ICRC validation is optional and can be revisited when a two-host test setup is available (single-host Soft-RoCE loopback does not produce sniffable traffic; see PR history)
+1. Sweep engine: advance src IP / dst IP / src port / dst port / size per packet according to the sweep_* registers; hdr_builder currently takes size from `sweep_size_min_i` as a fixed value
+2. Rate limiter: pace triggers according to RATE_MODE / RATE_LINE_PERCENT / RATE_IFG_BYTES
+3. `pktforge_icrc` module: append the 4-byte ICRC before FCS when `output_opts.append_icrc` is set. Model already computes it; RTL needs to reproduce it byte-serially
+4. `pktforge_fcs` module: append Ethernet FCS when `output_opts.append_fcs` is set
+5. Real-capture ICRC validation remains optional and can be revisited when a two-host test setup is available
 
 ## Known limitations / TODOs
 
