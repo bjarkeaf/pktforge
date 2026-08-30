@@ -4,7 +4,7 @@ Handoff document. Update at the end of every session. Read at the start of every
 
 ## Current state
 
-**Phase 3 in progress.** Phase 0/1/2 exit gates cleared. Sweep counter module in place; `pktforge_hdr_builder` now instantiates 5 sweep counters (src IP, dst IP, src port, dst port, size) and advances them per emitted packet. Cocotb test extended with dedicated sweep scenarios (single-dim: sport, sip, size; multi-dim: dip+dport) diffed byte-exact against the golden model.
+**Phase 3 in progress.** Phase 0/1/2 exit gates cleared. Full datapath is wired: `pktforge_top` composes regfile + hdr_builder + ICRC appender + FCS appender behind a single AXI-Lite subordinate and a single AXI-Stream master. End-to-end cocotb test writes config over AXI-Lite, pulses CTRL.START, and diffs captured frames byte-exact against `model/golden.py` with append_icrc=True and append_fcs=True. Header builder is now trailer-aware (adjusts payload length + IP.len/UDP.len based on append_icrc_i/append_fcs_i).
 
 ## What is done
 
@@ -18,16 +18,18 @@ Handoff document. Update at the end of every session. Read at the start of every
 - `rtl/pktforge_hdr_builder.sv`: RoCEv2 header/payload generator. Consumes regfile output bus; emits one Eth+IPv4+UDP+BTH+payload frame per `pkt_valid_i` pulse on AXI-Stream master (DATA_W=32). Internal 24-bit PSN counter loads from `roce_psn_ack_i` on `start_i`. Combinational IP header checksum. Tested by `tb/test_hdr_builder.py` (byte-exact diff against golden across baseline/large/unaligned/DSCP-TTL/ack_req/randomized/backpressure scenarios)
 - `rtl/pktforge_sweep.sv`: parametric per-dimension sweep counter. `start_i` loads counter to `min_i`, `advance_i` steps by `step_i` and wraps back to `min_i` when the next value would exceed `max_i`. `step_i==0` disables the sweep (`value_o == base_i`). Tested by `tb/test_sweep.py` against a Python mirror of `_sweep_value`. Instantiated 5 times inside `pktforge_hdr_builder` for the 5 sweep dimensions
 - `rtl/pktforge_fcs_appender.sv`: AXI-Stream in → out. Computes CRC-32 (zlib.crc32-compatible) over each frame and appends the 4-byte FCS little-endian, merging into the last input beat's empty lanes when possible. Tested by `tb/test_fcs_appender.py` against `model/fcs.py:compute_fcs`
-- `rtl/pktforge_icrc_appender.sv`: RoCEv2 Invariant CRC appender. Same skeleton as fcs_appender, with per-byte masking (offsets 15, 22, 24-25, 40-41, 46 → 0xFF) and a precomputed initial CRC state (0xDEBB20E3, the state after 8 bytes of 0xFF LRH prefix). Tested by `tb/test_icrc_appender.py` against `model/icrc.py:compute_icrc_ipv4`
+- `rtl/pktforge_icrc_appender.sv`: RoCEv2 Invariant CRC appender. Same skeleton as fcs_appender, with per-byte masking (offsets 15, 22, 24-25, 40-41, 46 → 0xFF), Ethernet header excluded from the CRC pseudo-packet, and a precomputed initial CRC state (0xDEBB20E3, the state after 8 bytes of 0xFF LRH prefix). Tested by `tb/test_icrc_appender.py` against `model/icrc.py:compute_icrc_ipv4`
+- `rtl/pktforge_top.sv`: top-level wrapper. Instantiates regfile, hdr_builder, ICRC appender, and FCS appender in series. Packet controller latches PACKET_COUNT on CTRL.START, drives hdr_builder's trigger with backpressure-safe handshake, and counts PACKETS_SENT. STATUS.DONE asserts when the count is reached or CTRL.STOP fires. `output_opts[1:0]` bits gate the trailer-aware sizing in hdr_builder (runtime bypass of the appender datapaths is a follow-up). Tested end-to-end by `tb/test_top.py`
 - `model/golden.py`: RoCEv2 UDP checksum forced to 0 to match spec-compliant hardware behavior (IB Annex A17.4.5.3)
 - CI: sim job enabled, pulls oss-cad-suite for Verilator ≥ 5.028
 - Docs: `docs/setup.md`, `docs/regmap.md`, this file
 
 ## What is next
 
-1. Rate limiter: pace triggers according to RATE_MODE / RATE_LINE_PERCENT / RATE_IFG_BYTES
-2. Top-level integration wrapper (`pktforge_top.sv`) that ties regfile + hdr_builder + (optional) ICRC/FCS appenders in the right order per `output_opts`
-3. Real-capture ICRC validation remains optional and can be revisited when a two-host test setup is available
+1. Runtime bypass of ICRC / FCS appenders driven by OUTPUT_OPTS[1:0], so hosts can turn either trailer off at run time (`pktforge_top` currently keeps both in the datapath unconditionally)
+2. Rate limiter: pace triggers according to RATE_MODE / RATE_LINE_PERCENT / RATE_IFG_BYTES
+3. Board bring-up (Phase 6 in the plan): pin out `pktforge_top` on the DE10-Nano and route to the fabric loopback tap
+4. Real-capture ICRC validation remains optional and can be revisited when a two-host test setup is available
 
 ## Known limitations / TODOs
 
