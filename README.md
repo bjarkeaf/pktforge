@@ -4,18 +4,18 @@ Open-source, stateless FPGA packet generator IP core. Vendor-neutral SystemVeril
 
 ## Status
 
-**Pre-alpha, scaffolding.** No RTL yet. See `docs/status.md` for the current session state.
+**RoCEv2 simulation MVP complete.** `pktforge_top` composes the regfile, header/payload builder, ICRC and FCS appenders, and rate limiter behind one AXI-Lite subordinate and one AXI-Stream master. Every emitted frame is diffed byte-exact against a Scapy golden model in CI. See `docs/status.md` for what's done and what's next; board bring-up on the DE10-Nano is the outstanding item.
 
 ## What it does
 
-`pktforge_core` generates network frames at line rate from an AXI-Stream master port, driven by an AXI-Lite register file. Frame types:
+`pktforge_top` generates network frames at line rate from an AXI-Stream master port, driven by an AXI-Lite register file (register map in [`docs/regmap.md`](docs/regmap.md)). Supported today:
 
 - Ethernet + IPv4 + UDP + RoCEv2 (BTH header, per-packet PSN, optional ICRC)
-- Ethernet + IPv4 + TCP with HTTP-shaped payload (stateless incrementing sequence numbers)
+- Optional Ethernet FCS trailer
+- Sweep engine over src/dst IP, src/dst port, and frame size (matches pktgen-dpdk `range` mode) to spread across NIC receive queues
+- Rate limiter with IFG-bytes mode and LINE_PERCENT mode
 
-A range/sweep engine varies src/dst IP, src/dst port, and frame size to spread across NIC receive queues (RSS).
-
-A companion `pktforge_checker` core consumes AXI-Stream and mirror-compares against the same configuration for on-hardware verification via internal fabric loopback.
+Planned but not yet in RTL: TCP+HTTP frame type (the Python golden model already supports it) and VLAN insertion. A `pktforge_checker` companion core for on-hardware loopback verification is on the roadmap after board bring-up.
 
 ## Why it exists
 
