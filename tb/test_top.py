@@ -57,6 +57,7 @@ A = {
     "OUTPUT_OPTS":       0xAC,
     "PACKET_COUNT":      0xB0,
     "PACKETS_SENT":      0xB8,
+    "RATE_IFG_BYTES":    0xA8,
 }
 
 
@@ -98,6 +99,7 @@ def test_top_build_and_run():
             str(RTL_DIR / "pktforge_hdr_builder.sv"),
             str(RTL_DIR / "pktforge_icrc_appender.sv"),
             str(RTL_DIR / "pktforge_fcs_appender.sv"),
+            str(RTL_DIR / "pktforge_rate_limiter.sv"),
             str(RTL_DIR / "pktforge_top.sv"),
         ],
         hdl_toplevel="pktforge_top",
@@ -160,6 +162,9 @@ async def _write_config(master: AxilMaster, cfg_kwargs) -> None:
     # override; default is both on to match the regfile reset value.
     output_opts = cfg_kwargs.get("output_opts", 0x3)
     await master.write(A["OUTPUT_OPTS"], output_opts)
+    # IFG defaults to 0 for the byte-exact scenarios so runs stay quick;
+    # dedicated rate scenarios override this.
+    await master.write(A["RATE_IFG_BYTES"], cfg_kwargs.get("rate_ifg_bytes", 0))
     await master.write(A["PACKET_COUNT"], cfg_kwargs["packet_count"] & 0xFFFFFFFF)
 
 
@@ -306,3 +311,9 @@ async def cocotb_top_full(dut):
         scen = dict(base); scen["size"] = 80; scen["packet_count"] = 3
         scen["output_opts"] = opts
         await _run_scenario(dut, master, monitor, scen, label=name)
+
+    # --- 10. Rate-limited: RATE_IFG_BYTES=400 (100 cycles gap per packet) ---
+    await _reset(dut)
+    scen10 = dict(base); scen10["size"] = 64; scen10["packet_count"] = 3
+    scen10["rate_ifg_bytes"] = 400
+    await _run_scenario(dut, master, monitor, scen10, label="rate_limited")
