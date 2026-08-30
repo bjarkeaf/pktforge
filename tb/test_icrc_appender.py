@@ -65,6 +65,7 @@ def _master_bus_from_dut(dut) -> AxisSlaveBus:
 
 async def _reset(dut, cycles: int = 5) -> None:
     dut.rst.value = 1
+    dut.enable_i.value = 1
     dut.s_axis_tdata.value  = 0
     dut.s_axis_tkeep.value  = 0
     dut.s_axis_tvalid.value = 0
