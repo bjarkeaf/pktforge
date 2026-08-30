@@ -25,7 +25,7 @@ cocotb = pytest.importorskip("cocotb", reason="cocotb not installed; see docs/se
 pytest.importorskip("scapy", reason="scapy not installed; see docs/setup.md")
 
 from cocotb.clock import Clock  # noqa: E402
-from cocotb.triggers import RisingEdge, Timer  # noqa: E402
+from cocotb.triggers import RisingEdge  # noqa: E402
 from cocotb_tools.runner import get_runner  # noqa: E402
 
 from .conftest import RTL_DIR, BUILD_DIR
@@ -158,6 +158,8 @@ async def _reset(dut, cycles: int = 5) -> None:
 
 
 async def _pulse_start(dut) -> None:
+    # Sync to an edge first so the value write lands in the ReadWrite phase
+    # before the next sampling edge (cocotb+Verilator write-timing gotcha).
     await RisingEdge(dut.clk)
     dut.start_i.value = 1
     await RisingEdge(dut.clk)
@@ -165,41 +167,32 @@ async def _pulse_start(dut) -> None:
     await RisingEdge(dut.clk)
 
 
-async def _trigger_packet(dut) -> None:
-    # Sync to an edge, then wait for ready, then pulse valid.
+async def _trigger_packet(dut, *, ready_timeout: int = 1000) -> None:
     await RisingEdge(dut.clk)
-    for _ in range(1000):
+    for _ in range(ready_timeout):
         if int(dut.pkt_ready_o.value) == 1:
             break
         await RisingEdge(dut.clk)
     else:
         raise RuntimeError(
-            f"pkt_ready_o never went high after 1000 cycles; "
-            f"pkt_ready_o={dut.pkt_ready_o.value} tvalid={dut.m_axis_tvalid.value}"
+            f"pkt_ready_o never went high in {ready_timeout} cycles"
         )
     dut.pkt_valid_i.value = 1
     await RisingEdge(dut.clk)
     dut.pkt_valid_i.value = 0
-    dut._log.info(
-        f"trigger fired: pkt_ready_o={dut.pkt_ready_o.value} "
-        f"tvalid={dut.m_axis_tvalid.value} tready={dut.m_axis_tready.value}"
-    )
 
 
 async def _run_scenario(dut, monitor: AxisSlaveMonitor, cfg_kwargs, *, label: str) -> None:
-    dut._log.info(f"[{label}] scenario begin: size={cfg_kwargs['size']} psn={cfg_kwargs['psn_start']:#x} n={cfg_kwargs['packet_count']}")
     _drive_config(dut, cfg_kwargs)
     await RisingEdge(dut.clk)
     await _pulse_start(dut)
-    dut._log.info(f"[{label}] after start pulse: pkt_ready_o={dut.pkt_ready_o.value}")
 
-    for i in range(cfg_kwargs["packet_count"]):
+    for _ in range(cfg_kwargs["packet_count"]):
         await _trigger_packet(dut)
-        dut._log.info(f"[{label}] triggered packet {i}")
 
-    dut._log.info(f"[{label}] awaiting {cfg_kwargs['packet_count']} frames from monitor")
-    frames_got = await monitor.recv_n_frames(cfg_kwargs["packet_count"], timeout_cycles=20_000)
-    dut._log.info(f"[{label}] received {len(frames_got)} frames")
+    frames_got = await monitor.recv_n_frames(
+        cfg_kwargs["packet_count"], timeout_cycles=20_000
+    )
     cfg = _make_cfg(**cfg_kwargs)
     for i, got in enumerate(frames_got):
         expected = frame_bytes(cfg, i)
