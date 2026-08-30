@@ -156,8 +156,10 @@ async def _write_config(master: AxilMaster, cfg_kwargs) -> None:
     await master.write(A["SWEEP_SIZE_MAX"],  size_max & 0xFFF)
     await master.write(A["SWEEP_SIZE_STEP"], size_step & 0xFFF)
 
-    # Both ICRC and FCS on (matches golden append_icrc=True, append_fcs=True).
-    await master.write(A["OUTPUT_OPTS"], 0x3)
+    # OUTPUT_OPTS bit 0 = FCS enable, bit 1 = ICRC enable. Scenario can
+    # override; default is both on to match the regfile reset value.
+    output_opts = cfg_kwargs.get("output_opts", 0x3)
+    await master.write(A["OUTPUT_OPTS"], output_opts)
     await master.write(A["PACKET_COUNT"], cfg_kwargs["packet_count"] & 0xFFFFFFFF)
 
 
@@ -204,7 +206,10 @@ def _make_cfg(cfg_kwargs):
             "size":     size_dim,
         },
         "rate": {"mode": "line_percent", "line_percent": 100, "ifg_bytes": None},
-        "output": {"append_fcs": True, "append_icrc": True},
+        "output": {
+            "append_fcs":  bool(cfg_kwargs.get("output_opts", 0x3) & 0x1),
+            "append_icrc": bool(cfg_kwargs.get("output_opts", 0x3) & 0x2),
+        },
         "run": {"packet_count": cfg_kwargs["packet_count"], "seed": 0},
     })
 
@@ -293,3 +298,11 @@ async def cocotb_top_full(dut):
     scen6 = dict(base); scen6["size"] = 96; scen6["packet_count"] = 3
     await _run_scenario(dut, master, monitor, scen6, label="backpressure")
     monitor.ready_prob = 1.0
+
+    # --- 7-9. Runtime OUTPUT_OPTS bypass matrix ---
+    # 0x0 = neither trailer, 0x1 = FCS only, 0x2 = ICRC only
+    for opts, name in ((0x0, "no_trailers"), (0x1, "fcs_only"), (0x2, "icrc_only")):
+        await _reset(dut)
+        scen = dict(base); scen["size"] = 80; scen["packet_count"] = 3
+        scen["output_opts"] = opts
+        await _run_scenario(dut, master, monitor, scen, label=name)

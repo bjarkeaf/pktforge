@@ -263,7 +263,8 @@ module pktforge_top (
         .m_axis_tkeep  (icrc_axis_tkeep),
         .m_axis_tvalid (icrc_axis_tvalid),
         .m_axis_tready (icrc_axis_tready),
-        .m_axis_tlast  (icrc_axis_tlast)
+        .m_axis_tlast  (icrc_axis_tlast),
+        .enable_i      (output_opts[1])
     );
 
     pktforge_fcs_appender u_fcs (
@@ -278,7 +279,8 @@ module pktforge_top (
         .m_axis_tkeep  (m_axis_tkeep),
         .m_axis_tvalid (m_axis_tvalid),
         .m_axis_tready (m_axis_tready),
-        .m_axis_tlast  (m_axis_tlast)
+        .m_axis_tlast  (m_axis_tlast),
+        .enable_i      (output_opts[0])
     );
 
 endmodule

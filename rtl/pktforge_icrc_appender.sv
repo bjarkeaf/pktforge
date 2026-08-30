@@ -39,12 +39,18 @@ module pktforge_icrc_appender #(
     output logic                s_axis_tready,
     input  logic                s_axis_tlast,
 
-    // Master (to pktforge_fcs_appender or downstream)
+    // Master (to pktforge_fcs_appender or downstream). ICRC appended when
+    // enable_i is high.
     output logic [DATA_W-1:0]   m_axis_tdata,
     output logic [DATA_W/8-1:0] m_axis_tkeep,
     output logic                m_axis_tvalid,
     input  logic                m_axis_tready,
-    output logic                m_axis_tlast
+    output logic                m_axis_tlast,
+
+    // Runtime enable. When 0, the appender is a pure pass-through: no CRC
+    // computation, no APPEND beat, s_axis is forwarded to m_axis unchanged
+    // (tlast included). Toggle only between frames.
+    input  logic                enable_i
 );
 
     localparam int          LANES     = DATA_W / 8;
@@ -123,15 +129,21 @@ module pktforge_icrc_appender #(
     // ------------------------------------------------------------------
     // Handshake and output construction (mirror of FCS appender)
     // ------------------------------------------------------------------
-    assign s_axis_tready = (state_q == S_PASS) && m_axis_tready;
-    assign m_axis_tvalid = (state_q == S_PASS) ? s_axis_tvalid : 1'b1;
+    assign s_axis_tready = !enable_i ? m_axis_tready
+                                     : ((state_q == S_PASS) && m_axis_tready);
+    assign m_axis_tvalid = !enable_i ? s_axis_tvalid
+                                     : ((state_q == S_PASS) ? s_axis_tvalid : 1'b1);
 
     always_comb begin
         m_axis_tdata = '0;
         m_axis_tkeep = '0;
         m_axis_tlast = 1'b0;
 
-        if (state_q == S_PASS) begin
+        if (!enable_i) begin
+            m_axis_tdata = s_axis_tdata;
+            m_axis_tkeep = s_axis_tkeep;
+            m_axis_tlast = s_axis_tlast;
+        end else if (state_q == S_PASS) begin
             // Forward the ORIGINAL bytes (only CRC uses masked versions).
             m_axis_tdata = s_axis_tdata;
             m_axis_tkeep = s_axis_tkeep;
@@ -175,6 +187,10 @@ module pktforge_icrc_appender #(
             byte_cnt_q     <= 12'h0;
             append_bytes_q <= 3'd0;
             append_data_q  <= 32'h0;
+        end else if (!enable_i) begin
+            state_q    <= S_PASS;
+            crc_q      <= ICRC_INIT;
+            byte_cnt_q <= 12'h0;
         end else begin
             case (state_q)
                 S_PASS: begin
