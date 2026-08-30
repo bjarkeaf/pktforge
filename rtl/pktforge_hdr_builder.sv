@@ -63,6 +63,13 @@ module pktforge_hdr_builder #(
     input  logic [31:0] sweep_size_step_i,
     /* verilator lint_on UNUSEDSIGNAL */
 
+    // Trailer awareness: swept size is the FINAL wire size (matches
+    // model/golden.py). When downstream will append ICRC / FCS, the header
+    // builder shortens its own output and adjusts IP.len / UDP.len so the
+    // final on-wire frame comes out at the configured size.
+    input  logic         append_icrc_i,
+    input  logic         append_fcs_i,
+
     // AXI-Stream master
     output logic [DATA_W-1:0]      m_axis_tdata,
     output logic [DATA_W/8-1:0]    m_axis_tkeep,
@@ -169,15 +176,21 @@ module pktforge_hdr_builder #(
     // ------------------------------------------------------------------
     // Trigger-time fields (combinational)
     // ------------------------------------------------------------------
-    logic [11:0] trig_size;
-    logic [15:0] ip_total_len;
-    logic [15:0] udp_len;
+    logic [11:0] wire_size;       // final on-wire frame size (matches golden `size`)
+    logic [3:0]  icrc_bytes;
+    logic [3:0]  fcs_bytes;
+    logic [11:0] hdr_output_size; // bytes hdr_builder emits (wire_size - trailers)
+    logic [15:0] ip_total_len;    // IP.len = wire - eth - fcs (includes ICRC when present)
+    logic [15:0] udp_len;         // UDP.len = wire - eth - ip - fcs
     logic [7:0]  ip_tos;
     logic [7:0]  bth_ack_req_byte;
 
-    assign trig_size        = current_size;
-    assign ip_total_len     = {4'h0, trig_size} - 16'd14;
-    assign udp_len          = {4'h0, trig_size} - 16'd34;
+    assign wire_size        = current_size;
+    assign icrc_bytes       = append_icrc_i ? 4'd4 : 4'd0;
+    assign fcs_bytes        = append_fcs_i  ? 4'd4 : 4'd0;
+    assign hdr_output_size  = wire_size - {8'h0, icrc_bytes} - {8'h0, fcs_bytes};
+    assign ip_total_len     = {4'h0, wire_size} - 16'd14 - {12'h0, fcs_bytes};
+    assign udp_len          = {4'h0, wire_size} - 16'd34 - {12'h0, fcs_bytes};
     assign ip_tos           = {ip_misc_i[13:8], ip_misc_i[15:14]};
     assign bth_ack_req_byte = {roce_psn_ack_i[24], 7'h00};
 
@@ -359,7 +372,7 @@ module pktforge_hdr_builder #(
                 S_IDLE: begin
                     if (pkt_valid_i) begin
                         pkt_psn_q  <= psn_q;
-                        size_q     <= trig_size;
+                        size_q     <= hdr_output_size;
                         byte_cnt_q <= 12'h0;
                         for (int i = 0; i < HDR_LEN; i++) hdr_bytes_q[i] <= hdr_next[i];
                         psn_q      <= psn_q + 24'd1;

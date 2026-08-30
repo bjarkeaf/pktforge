@@ -184,6 +184,9 @@ async def _reset(dut, cycles: int = 5) -> None:
     dut.rst.value = 1
     dut.start_i.value = 0
     dut.pkt_valid_i.value = 0
+    # No downstream trailers in the standalone hdr_builder test.
+    dut.append_icrc_i.value = 0
+    dut.append_fcs_i.value = 0
     dut.eth_src_mac_i.value = 0
     dut.eth_dst_mac_i.value = 0
     dut.ip_src_i.value = 0
