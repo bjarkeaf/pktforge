@@ -58,7 +58,7 @@ module pktforge_hdr_builder #(
     // ------------------------------------------------------------------
     // State
     // ------------------------------------------------------------------
-    typedef enum logic {S_IDLE, S_EMIT} state_t;
+    typedef enum logic [0:0] {S_IDLE = 1'b0, S_EMIT = 1'b1} state_t;
     state_t state_q;
 
     logic [23:0] psn_q;       // running PSN (advances per packet)
@@ -257,7 +257,7 @@ module pktforge_hdr_builder #(
                 psn_q <= roce_psn_ack_i[23:0];
             end
 
-            unique case (state_q)
+            case (state_q)
                 S_IDLE: begin
                     if (pkt_valid_i) begin
                         pkt_psn_q  <= psn_q;
